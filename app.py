@@ -1,82 +1,97 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.express as px
 import tensorflow as tf
 import joblib
 import requests
-import time
- 
-# 1. Load the AI Models and Scaler
-# Use @st.cache_resource so they only load once
+from datetime import datetime
+
+# Page Config
+st.set_page_config(page_title="Electricity Theft Detection", layout="wide")
+
+# Custom CSS for Professional Look
+st.markdown("""
+    <style>
+    .stMetric { background-color: #f0f2f6; padding: 15px; border-radius: 10px; border: 1px solid #d1d5db; }
+    .status-card { padding: 20px; border-radius: 10px; text-align: center; font-weight: bold; }
+    </style>
+    """, unsafe_allow_html=True)
+
 @st.cache_resource
-def load_models():
+def load_assets():
     model = tf.keras.models.load_model('combined_model.keras')
     iso_forest = joblib.load('iso_forest.pkl')
     scaler = joblib.load('scaler.pkl')
     return model, iso_forest, scaler
 
-model, iso_forest, scaler = load_models()
+model, iso_forest, scaler = load_assets()
 
-# 2. ThingSpeak Configuration (Replace with your actual keys)
-CHANNEL_ID = "3256606"
-READ_API_KEY = "YC5N2SQUWR1IYIR0"
+# --- ThingSpeak Data Fetching ---
+def fetch_data(results=50):
+    url = f"https://api.thingspeak.com/channels/3256606/feeds.json?api_key=YC5N2SQUWR1IYIR0&results={results}"
+    data = requests.get(url).json()
+    df = pd.DataFrame(data['feeds'])
+    # Rename fields to professional labels
+    df.columns = ['Time', 'Entry_ID', 'Voltage', 'Current', 'Power', 'Energy', 'Frequency', 'Power_Factor']
+    df[['Voltage', 'Current', 'Power', 'Energy', 'Frequency', 'Power_Factor']] = df[['Voltage', 'Current', 'Power', 'Energy', 'Frequency', 'Power_Factor']].apply(pd.to_numeric)
+    df['Time'] = pd.to_datetime(df['Time'])
+    return df
 
-def fetch_thingspeak_data():
-    """Fetches the latest entry from ThingSpeak"""
-    url = f"https://api.thingspeak.com/channels/{CHANNEL_ID}/feeds.json?api_key={READ_API_KEY}&results=1"
-    try:
-        response = requests.get(url).json()
-        feed = response['feeds'][0]
-        # Map your fields: Voltage, Current, Power, Energy, Frequency, Power_Factor
-        data = [
-            float(feed['field1']), float(feed['field2']), float(feed['field3']),
-            float(feed['field4']), float(feed['field5']), float(feed['field6'])
-        ]
-        return np.array(data).reshape(1, -1), feed['created_at']
-    except Exception as e:
-        st.error(f"Error fetching data: {e}")
-        return None, None
+# --- Main UI ---
+st.title("🛡️ ELCOT: Advanced Electricity Theft Detection")
 
-# 3. Streamlit UI Layout
-st.title("⚡ ELCOT Electricity Theft Detection")
-st.sidebar.header("System Settings")
-refresh_rate = st.sidebar.slider("Refresh Rate (seconds)", 5, 60, 15)
+# Refresh Button in Sidebar
+if st.sidebar.button('🔄 Refresh System'):
+    st.rerun()
 
-# Container for real-time updates
-placeholder = st.empty()
+# 1. LIVE METRICS ROW
+df = fetch_data()
+latest = df.iloc[-1]
 
-while True:
-    raw_data, timestamp = fetch_thingspeak_data()
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Live Voltage", f"{latest['Voltage']}V", delta="Stable")
+c2.metric("Current Load", f"{latest['Current']}A")
+c3.metric("Active Power", f"{latest['Power']}W")
+c4.metric("Frequency", f"{latest['Frequency']}Hz")
+
+st.divider()
+
+# 2. ANALYSIS ROW (Models vs Charts)
+col_left, col_right = st.columns([1, 2])
+
+with col_left:
+    st.subheader("🤖 AI Security Analysis")
+    # Prepare data for AI
+    current_features = np.array([[latest['Voltage'], latest['Current'], latest['Power'], 
+                                latest['Energy'], latest['Frequency'], latest['Power_Factor']]])
+    scaled_data = scaler.transform(current_features)
     
-    if raw_data is not None:
-        # Scale the data for the AI
-        scaled_data = scaler.transform(raw_data)
-        
-        # --- MODEL 1: CNN-LSTM Theft Prediction ---
-        # Reshape to (batch, steps, features) for the LSTM
-        sequence_data = np.repeat(scaled_data[:, np.newaxis, :], 10, axis=1)
-        theft_prob = model.predict(sequence_data)[0][0]
-        
-        # --- MODEL 2: Isolation Forest Outlier Detection ---
-        iso_pred = iso_forest.predict(scaled_data) # -1 = Outlier, 1 = Normal
+    # Predict
+    sequence_data = np.repeat(scaled_data[:, np.newaxis, :], 10, axis=1)
+    theft_prob = model.predict(sequence_data)[0][0]
+    iso_pred = iso_forest.predict(scaled_data)[0]
 
-        with placeholder.container():
-            # Display Metrics
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Voltage", f"{raw_data[0][0]} V")
-            m2.metric("Current", f"{raw_data[0][1]} A")
-            m3.metric("Power", f"{raw_data[0][2]} W")
+    # Professional Status Cards
+    if theft_prob > 0.5:
+        st.error("🚨 ALERT: CRIMINAL THEFT DETECTED")
+        st.progress(float(theft_prob))
+    elif iso_pred == -1:
+        st.warning("⚠️ UNKNOWN DEVICE DETECTED")
+        if st.button("Register New Device as Safe"):
+            st.success("Updating Device Database...")
+    else:
+        st.success("✅ SYSTEM STATUS: SECURE")
+    
+    st.info(f"Last Scan: {datetime.now().strftime('%H:%M:%S')}")
 
-            # Status Alerts
-            if theft_prob > 0.5:
-                st.error(f"🚨 ALERT: Theft Detected! (Confidence: {theft_prob:.2%})")
-            elif iso_pred == -1:
-                st.warning("⚠️ Unknown Device Detected! Is this a new device?")
-                if st.button("Yes, Register as Normal"):
-                    st.info("Recording device signature... Model will update on next training cycle.")
-            else:
-                st.success("✅ System Status: Normal")
-            
-            st.caption(f"Last updated: {timestamp}")
+with col_right:
+    st.subheader("📈 Consumption History (Recent)")
+    fig = px.line(df, x='Time', y='Power', title='Power Load (Watts)', 
+                  template='plotly_white', line_shape='spline')
+    fig.update_traces(line_color='#1f77b4')
+    st.plotly_chart(fig, use_container_width=True)
 
-    time.sleep(refresh_rate) # Wait before next refresh
+# 3. RAW DATA LOG
+with st.expander("📄 View System Log History"):
+    st.dataframe(df.sort_values(by='Time', ascending=False), use_container_width=True)
