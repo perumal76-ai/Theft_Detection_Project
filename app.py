@@ -14,8 +14,8 @@ st.set_page_config(page_title="ELCOT Theft Detection", layout="wide")
 st.title("⚡ ELCOT Real-Time Electricity Theft Detection")
 
 # 2. ThingSpeak Configuration (Replace with your keys)
-TS_CHANNEL_ID = "YOUR_CHANNEL_ID"
-TS_READ_API_KEY = "YOUR_API_KEY"
+TS_CHANNEL_ID = "3256606"
+TS_READ_API_KEY = "YC5N2SQUWR1IYIR0"
 
 def fetch_live_data():
     url = f"https://api.thingspeak.com/channels/{TS_CHANNEL_ID}/feeds.json?api_key={TS_READ_API_KEY}&results=1"
