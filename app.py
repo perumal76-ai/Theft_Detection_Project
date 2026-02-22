@@ -1,97 +1,98 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
 import tensorflow as tf
 import joblib
 import requests
-from datetime import datetime
+import plotly.express as px
+import time
 
-# Page Config
-st.set_page_config(page_title="Electricity Theft Detection", layout="wide")
+# 1. Dashboard Configuration
+st.set_page_config(page_title="Smart Electricity Monitor", layout="wide")
 
-# Custom CSS for Professional Look
-st.markdown("""
-    <style>
-    .stMetric { background-color: #f0f2f6; padding: 15px; border-radius: 10px; border: 1px solid #d1d5db; }
-    .status-card { padding: 20px; border-radius: 10px; text-align: center; font-weight: bold; }
-    </style>
-    """, unsafe_allow_html=True)
+# Secure Credentials
+CHANNEL_ID = "3256606" 
+READ_API_KEY = "YC5N2SQUWR1IYIR0" 
 
 @st.cache_resource
-def load_assets():
+def load_ai_assets():
     model = tf.keras.models.load_model('combined_model.keras')
     iso_forest = joblib.load('iso_forest.pkl')
     scaler = joblib.load('scaler.pkl')
     return model, iso_forest, scaler
 
-model, iso_forest, scaler = load_assets()
+model, iso_forest, scaler = load_ai_assets()
 
-# --- ThingSpeak Data Fetching ---
+# 2. Data Fetching using ID and API Key
 def fetch_data(results=50):
-    url = f"https://api.thingspeak.com/channels/3256606/feeds.json?api_key=YC5N2SQUWR1IYIR0&results={results}"
-    data = requests.get(url).json()
-    df = pd.DataFrame(data['feeds'])
-    # Rename fields to professional labels
-    df.columns = ['Time', 'Entry_ID', 'Voltage', 'Current', 'Power', 'Energy', 'Frequency', 'Power_Factor']
-    df[['Voltage', 'Current', 'Power', 'Energy', 'Frequency', 'Power_Factor']] = df[['Voltage', 'Current', 'Power', 'Energy', 'Frequency', 'Power_Factor']].apply(pd.to_numeric)
-    df['Time'] = pd.to_datetime(df['Time'])
-    return df
+    url = f"https://api.thingspeak.com/channels/{CHANNEL_ID}/feeds.json?api_key={READ_API_KEY}&results={results}"
+    try:
+        response = requests.get(url).json()
+        df = pd.DataFrame(response['feeds'])
+        
+        # Mapping hardware fields to labels
+        rename_map = {
+            'field1': 'Voltage', 'field2': 'Current', 'field3': 'Power',
+            'field4': 'Energy', 'field5': 'Frequency', 'field6': 'Power_Factor'
+        }
+        df.rename(columns=rename_map, inplace=True)
+        df['Time'] = pd.to_datetime(df['created_at'])
+        
+        # Clean numeric data for AI
+        cols = ['Voltage', 'Current', 'Power', 'Energy', 'Frequency', 'Power_Factor']
+        df[cols] = df[cols].apply(pd.to_numeric)
+        return df[['Time'] + cols]
+    except Exception as e:
+        return None
 
-# --- Main UI ---
-st.title("🛡️ ELCOT: Advanced Electricity Theft Detection")
+# --- Dashboard UI ---
+st.title("🛡️ Advanced Electricity Theft Detection System")
 
-# Refresh Button in Sidebar
-if st.sidebar.button('🔄 Refresh System'):
-    st.rerun()
-
-# 1. LIVE METRICS ROW
+# 3. Main Logic
 df = fetch_data()
-latest = df.iloc[-1]
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Live Voltage", f"{latest['Voltage']}V", delta="Stable")
-c2.metric("Current Load", f"{latest['Current']}A")
-c3.metric("Active Power", f"{latest['Power']}W")
-c4.metric("Frequency", f"{latest['Frequency']}Hz")
-
-st.divider()
-
-# 2. ANALYSIS ROW (Models vs Charts)
-col_left, col_right = st.columns([1, 2])
-
-with col_left:
-    st.subheader("🤖 AI Security Analysis")
-    # Prepare data for AI
-    current_features = np.array([[latest['Voltage'], latest['Current'], latest['Power'], 
-                                latest['Energy'], latest['Frequency'], latest['Power_Factor']]])
-    scaled_data = scaler.transform(current_features)
+if df is not None and not df.empty:
+    latest = df.iloc[-1]
     
-    # Predict
-    sequence_data = np.repeat(scaled_data[:, np.newaxis, :], 10, axis=1)
-    theft_prob = model.predict(sequence_data)[0][0]
-    iso_pred = iso_forest.predict(scaled_data)[0]
+    # KPI Metrics
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Voltage", f"{latest['Voltage']} V")
+    c2.metric("Current", f"{latest['Current']} A")
+    c3.metric("Power", f"{latest['Power']} W")
+    c4.metric("Frequency", f"{latest['Frequency']} Hz")
 
-    # Professional Status Cards
-    if theft_prob > 0.5:
-        st.error("🚨 ALERT: CRIMINAL THEFT DETECTED")
-        st.progress(float(theft_prob))
-    elif iso_pred == -1:
-        st.warning("⚠️ UNKNOWN DEVICE DETECTED")
-        if st.button("Register New Device as Safe"):
-            st.success("Updating Device Database...")
-    else:
-        st.success("✅ SYSTEM STATUS: SECURE")
-    
-    st.info(f"Last Scan: {datetime.now().strftime('%H:%M:%S')}")
+    st.divider()
 
-with col_right:
-    st.subheader("📈 Consumption History (Recent)")
-    fig = px.line(df, x='Time', y='Power', title='Power Load (Watts)', 
-                  template='plotly_white', line_shape='spline')
-    fig.update_traces(line_color='#1f77b4')
-    st.plotly_chart(fig, use_container_width=True)
+    col_ai, col_chart = st.columns([1, 2])
 
-# 3. RAW DATA LOG
-with st.expander("📄 View System Log History"):
-    st.dataframe(df.sort_values(by='Time', ascending=False), use_container_width=True)
+    with col_ai:
+        st.subheader("🤖 AI Security Scan")
+        
+        # Prepare live features
+        current_features = latest[['Voltage', 'Current', 'Power', 'Energy', 'Frequency', 'Power_Factor']].values.reshape(1, -1)
+        scaled_features = scaler.transform(current_features)
+        
+        # CNN-LSTM Sequence Prediction
+        sequence = np.repeat(scaled_features[:, np.newaxis, :], 10, axis=1)
+        theft_prob = model.predict(sequence)[0][0]
+        
+        # Isolation Forest Outlier Check
+        iso_status = iso_forest.predict(scaled_features)[0]
+
+        if theft_prob > 0.5:
+            st.error(f"🚨 ALERT: Theft Detected ({theft_prob:.1%})")
+        elif iso_status == -1:
+            st.warning("⚠️ Unknown Device Pattern")
+        else:
+            st.success("✅ System Secure")
+
+    with col_chart:
+        st.subheader("📈 Recent Load History")
+        fig = px.line(df, x='Time', y='Power', template='plotly_white')
+        fig.update_traces(line_color='#0ea5e9', fill='tozeroy')
+        st.plotly_chart(fig, use_container_width=True)
+
+# 4. SLEEP TIME: 16 Seconds
+# This prevents ThingSpeak from blocking your requests
+time.sleep(16)
+st.rerun()
